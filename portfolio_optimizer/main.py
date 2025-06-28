@@ -23,7 +23,7 @@ class PortfolioOptimizer:
         self.returns = None
         self.filtered_tickers = []
         
-    def fetch_stock_data(self, tickers, period="1y"):
+    def fetch_stock_data(self, tickers, period="5y"):
         """Fetch historical stock data and company info"""
         valid_tickers = []
         stock_data = {}
