@@ -1,0 +1,10 @@
+Ionq
+Qcom
+FTNT
+ENB
+EPR
+APD
+LCID
+SMCI
+CRWD
+CUBE
