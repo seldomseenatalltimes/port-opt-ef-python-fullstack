@@ -259,3 +259,6 @@ For questions, issues, or support:
 ---
 
 **Built with ❤️ using Python and Streamlit**
+
+generated with claude:
+https://claude.ai/share/333f57f6-2763-49a0-8c69-a8aeb60b1ab2
