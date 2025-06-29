@@ -7,8 +7,6 @@ import plotly.express as px
 from datetime import datetime, timedelta
 from scipy.optimize import minimize
 import warnings
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
 warnings.filterwarnings('ignore')
 
 # Configure page
@@ -25,93 +23,40 @@ class PortfolioOptimizer:
         self.returns = None
         self.filtered_tickers = []
         
-    def fetch_single_ticker_data(self, ticker, period="1y"):
-        """Fetch data for a single ticker"""
-        try:
-            stock = yf.Ticker(ticker)
-            
-            # Get historical data
-            hist = stock.history(period=period)
-            if len(hist) == 0:
-                return ticker, None, None
-                
-            # Get company info
-            info = stock.info
-            company_data = {
-                'market_cap': info.get('marketCap', 0) / 1e9,  # Convert to billions
-                'avg_volume': info.get('averageVolume', 0) / 1e6,  # Convert to millions
-                'sector': info.get('sector', 'N/A'),
-                'industry': info.get('industry', 'N/A')
-            }
-            
-            return ticker, hist['Close'], company_data
-            
-        except Exception as e:
-            return ticker, None, f"Error: {str(e)}"
-    
-    def fetch_stock_data_batch(self, tickers, period="1y", max_workers=8, batch_size=10):
-        """Fetch historical stock data and company info using batch processing"""
+    def fetch_stock_data(self, tickers, period="5y"):
+        """Fetch historical stock data and company info"""
         valid_tickers = []
         stock_data = {}
         company_info = {}
-        errors = {}
         
-        # Create progress tracking
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        # Process tickers in batches
-        total_tickers = len(tickers)
-        processed = 0
-        
-        # Split tickers into batches
-        ticker_batches = [tickers[i:i + batch_size] for i in range(0, len(tickers), batch_size)]
-        
-        for batch_idx, batch in enumerate(ticker_batches):
-            status_text.text(f'Processing batch {batch_idx + 1}/{len(ticker_batches)} ({len(batch)} tickers)...')
-            
-            # Process batch with ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as executor:
-                # Submit all tasks for current batch
-                future_to_ticker = {
-                    executor.submit(self.fetch_single_ticker_data, ticker, period): ticker 
-                    for ticker in batch
-                }
+        for i, ticker in enumerate(tickers):
+            try:
+                status_text.text(f'Fetching data for {ticker}...')
+                stock = yf.Ticker(ticker)
                 
-                # Collect results as they complete
-                for future in as_completed(future_to_ticker):
-                    ticker = future_to_ticker[future]
-                    try:
-                        result_ticker, hist_data, company_data = future.result()
-                        
-                        if hist_data is not None and company_data is not None:
-                            stock_data[result_ticker] = hist_data
-                            company_info[result_ticker] = company_data
-                            valid_tickers.append(result_ticker)
-                        else:
-                            errors[result_ticker] = company_data if isinstance(company_data, str) else "No data available"
-                            
-                    except Exception as e:
-                        errors[ticker] = f"Processing error: {str(e)}"
+                # Get historical data
+                hist = stock.history(period=period)
+                if len(hist) > 0:
+                    stock_data[ticker] = hist['Close']
                     
-                    processed += 1
-                    progress_bar.progress(processed / total_tickers)
-            
-            # Small delay between batches to avoid overwhelming the API
-            if batch_idx < len(ticker_batches) - 1:
-                time.sleep(0.5)
+                    # Get company info
+                    info = stock.info
+                    company_info[ticker] = {
+                        'market_cap': info.get('marketCap', 0) / 1e9,  # Convert to billions
+                        'avg_volume': info.get('averageVolume', 0) / 1e6,  # Convert to millions
+                        'sector': info.get('sector', 'N/A'),
+                        'industry': info.get('industry', 'N/A')
+                    }
+                    valid_tickers.append(ticker)
+                    
+            except Exception as e:
+                st.warning(f"Could not fetch data for {ticker}: {str(e)}")
+                
+            progress_bar.progress((i + 1) / len(tickers))
         
-        # Display results summary
-        status_text.text(f'Completed! Successfully processed {len(valid_tickers)}/{total_tickers} tickers')
-        
-        # Show errors if any
-        if errors:
-            with st.expander(f"⚠️ Failed to fetch data for {len(errors)} tickers"):
-                for ticker, error in errors.items():
-                    st.text(f"{ticker}: {error}")
-        
-        # Clean up progress indicators
-        time.sleep(1)
         status_text.empty()
         progress_bar.empty()
         
@@ -304,17 +249,6 @@ def create_portfolio_composition_chart(weights, tickers, title):
     
     return fig
 
-def get_period_options():
-    """Get available period options for data fetching"""
-    return {
-        "1 Year": "1y",
-        "2 Years": "2y",
-        "3 Years": "3y",
-        "5 Years": "5y",
-        "10 Years": "10y",
-        "Max Available": "max"
-    }
-
 def main():
     st.title("📈 Portfolio Optimization Tool")
     st.markdown("Optimize your investment portfolio using Modern Portfolio Theory")
@@ -326,18 +260,7 @@ def main():
     # Sidebar for inputs
     st.sidebar.header("📊 Portfolio Configuration")
     
-    # Period selection
-    st.sidebar.subheader("📅 Data Period")
-    period_options = get_period_options()
-    selected_period_label = st.sidebar.selectbox(
-        "Select historical data period:",
-        options=list(period_options.keys()),
-        index=0  # Default to 1 Year
-    )
-    selected_period = period_options[selected_period_label]
-    
     # Ticker input options
-    st.sidebar.subheader("🎯 Stock Selection")
     input_method = st.sidebar.radio(
         "Choose input method:",
         ["Manual Input", "Upload File"]
@@ -356,16 +279,6 @@ def main():
         if uploaded_file:
             tickers = [line.decode('utf-8').strip().upper() for line in uploaded_file.readlines() if line.strip()]
     
-    # Batch processing settings
-    st.sidebar.subheader("⚙️ Processing Settings")
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        max_workers = st.number_input("Max Workers", min_value=1, max_value=16, value=8, step=1,
-                                    help="Number of concurrent requests (higher = faster but may hit rate limits)")
-    with col2:
-        batch_size = st.number_input("Batch Size", min_value=5, max_value=50, value=10, step=5,
-                                   help="Number of tickers processed in each batch")
-    
     # Filter criteria
     st.sidebar.subheader("🔍 Filter Criteria")
     
@@ -378,63 +291,46 @@ def main():
         max_mcap = st.number_input("Max Market Cap (B)", min_value=0.0, value=1000.0, step=1.0)
         max_volume = st.number_input("Max Avg Volume (M)", min_value=0.0, value=1000.0, step=1.0)
     
-    # Display current settings
-    st.sidebar.info(f"**Current Settings:**\n- Period: {selected_period_label}\n- Tickers: {len(tickers)}\n- Max Workers: {max_workers}\n- Batch Size: {batch_size}")
-    
     # Analysis button
     if st.sidebar.button("🚀 Run Analysis", type="primary"):
         if not tickers:
             st.error("Please provide at least one ticker symbol")
             return
         
-        st.info(f"Starting analysis with {len(tickers)} tickers using {selected_period_label} of data...")
-        
-        with st.spinner("Fetching stock data using batch processing..."):
-            # Fetch data with batch processing
-            start_time = time.time()
-            valid_tickers, company_info = st.session_state.optimizer.fetch_stock_data_batch(
-                tickers, period=selected_period, max_workers=max_workers, batch_size=batch_size
-            )
-            fetch_time = time.time() - start_time
+        with st.spinner("Fetching stock data and optimizing portfolio..."):
+            # Fetch data
+            valid_tickers, company_info = st.session_state.optimizer.fetch_stock_data(tickers)
             
             if not valid_tickers:
                 st.error("No valid tickers found. Please check your input.")
                 return
             
-            st.success(f"✅ Fetched data for {len(valid_tickers)}/{len(tickers)} tickers in {fetch_time:.1f} seconds")
-            
             # Filter tickers
-            with st.spinner("Applying filter criteria..."):
-                filtered_tickers, filtered_info = st.session_state.optimizer.filter_by_criteria(
-                    valid_tickers, company_info, min_mcap, max_mcap, min_volume, max_volume
-                )
+            filtered_tickers, filtered_info = st.session_state.optimizer.filter_by_criteria(
+                valid_tickers, company_info, min_mcap, max_mcap, min_volume, max_volume
+            )
             
             if not filtered_tickers:
                 st.error("No tickers meet the specified criteria. Please adjust your filters.")
                 return
             
-            st.success(f"✅ Found {len(filtered_tickers)} stocks meeting your criteria!")
+            st.success(f"Found {len(filtered_tickers)} stocks meeting your criteria!")
             
             # Store results in session state
             st.session_state.filtered_tickers = filtered_tickers
             st.session_state.filtered_info = filtered_info
             st.session_state.analysis_complete = True
-            st.session_state.selected_period = selected_period_label
     
     # Display results
     if getattr(st.session_state, 'analysis_complete', False):
-        # Show analysis info
-        st.info(f"📊 Analysis completed using **{getattr(st.session_state, 'selected_period', 'Unknown')}** of historical data")
-        
         # Tabs for different views
         tab1, tab2, tab3 = st.tabs(["📈 Efficient Frontier", "📊 Portfolio Analysis", "📋 Stock Details"])
         
         with tab1:
             st.header("Efficient Frontier Analysis")
             
-            with st.spinner("Generating efficient frontier..."):
-                # Generate efficient frontier
-                efficient_portfolios, max_sharpe_idx, min_vol_idx = st.session_state.optimizer.generate_efficient_frontier()
+            # Generate efficient frontier
+            efficient_portfolios, max_sharpe_idx, min_vol_idx = st.session_state.optimizer.generate_efficient_frontier()
             
             if efficient_portfolios:
                 # Create and display plot
